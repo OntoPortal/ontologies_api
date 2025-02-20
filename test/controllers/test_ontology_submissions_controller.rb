@@ -20,7 +20,7 @@ class TestOntologySubmissionsController < TestCase
       "file" => Rack::Test::UploadedFile.new(@@test_file, ""),
       released: DateTime.now.to_s,
       contact: [{name: "test_name", email: "test3@example.org"}],
-      URI: 'https://test.com/test',
+      uri: 'https://test.com/test',
       status: 'production',
       description: 'ontology description'
     }

@@ -11,10 +11,10 @@ module Sinatra
         Rack::Utils.escape_html(text)
       end
 
-      ##
+     ##
       # Populate +obj+ using values from +params+
       # Will also try to find related objects using a Goo lookup.
-      # TODO: Currerntly, this allows for mass-assignment of everything, which will permit
+      # TODO: Currently, this allows for mass-assignment of everything, which will permit
       # users to overwrite any attribute, including things like passwords.
       def populate_from_params(obj, params)
         return if obj.nil?
@@ -23,14 +23,15 @@ module Sinatra
         if obj.is_a?(LinkedData::Models::Base)
           obj.bring_remaining if obj.exist?
           no_writable_attributes = obj.class.attributes(:all) - obj.class.attributes
-          params = params.reject  {|k,v| no_writable_attributes.include? k.to_sym}
+          params = params.reject { |k, v| no_writable_attributes.include? k.to_sym }
         end
         params.each do |attribute, value|
           next if value.nil?
 
-          # Deal with empty strings
+          # Deal with empty strings for String and URI
           empty_string = value.is_a?(String) && value.empty?
-          old_string_value_exists = obj.respond_to?(attribute) && obj.send(attribute).is_a?(String)
+          old_string_value_exists = obj.respond_to?(attribute) && (obj.send(attribute).is_a?(String) || obj.send(attribute).is_a?(RDF::URI))
+          old_string_value_exists ||= obj.respond_to?(attribute) && obj.send(attribute).is_a?(LinkedData::Models::Base)
           if old_string_value_exists && empty_string
             value = nil
           elsif empty_string
@@ -51,6 +52,10 @@ module Sinatra
             value = is_arr ? value : [value]
             new_value = []
             value.each do |cls|
+              if uri_as_needed(cls["ontology"]).nil?
+                new_value << cls
+                next
+              end
               sub = LinkedData::Models::Ontology.find(uri_as_needed(cls["ontology"])).first.latest_submission
               new_value << LinkedData::Models::Class.find(cls["class"]).in(sub).first
             end
@@ -58,8 +63,8 @@ module Sinatra
           elsif attr_cls && not_hash_or_array || (attr_cls && not_array_of_hashes)
             # Replace the initial value with the object, handling Arrays as appropriate
             if value.is_a?(Array)
-              value = value.map {|e| attr_cls.find(uri_as_needed(e)).include(attr_cls.attributes).first}
-            else
+              value = value.map { |e| attr_cls.find(uri_as_needed(e)).include(attr_cls.attributes).first }
+            elsif !value.nil?
               value = attr_cls.find(uri_as_needed(value)).include(attr_cls.attributes).first
             end
           elsif attr_cls
@@ -67,28 +72,31 @@ module Sinatra
             if value.is_a?(Array)
               retrieved_values = []
               value.each do |e|
+                e = e.to_h
                 retrieved_value = attr_cls.where(e.symbolize_keys).first
-                if retrieved_value
-                  retrieved_values << retrieved_value
-                else
-                  retrieved_values << populate_from_params(attr_cls.new, e.symbolize_keys).save
-                end
+                retrieved_values << (retrieved_value || populate_from_params(attr_cls.new, e.symbolize_keys).save)
               end
             else
-              retrieved_values = attr_cls.where(value.symbolize_keys).to_a
-              unless retrieved_values
-                retrieved_values = populate_from_params(attr_cls.new, e.symbolize_keys).save
-              end
+              retrieved_values = attr_cls.where(value.to_h.symbolize_keys).to_a
+              retrieved_values ||= populate_from_params(attr_cls.new, e.symbolize_keys).save
             end
             value = retrieved_values
           elsif attribute_settings && attribute_settings[:enforce] && attribute_settings[:enforce].include?(:date_time)
             # TODO: Remove this awful hack when obj.class.model_settings[:range][attribute] contains DateTime class
-            value = DateTime.parse(value)
+            is_array = value.is_a?(Array)
+            value = Array(value).map { |v| DateTime.parse(v) }
+            value = value.first unless is_array
+            value
+          elsif attribute_settings && attribute_settings[:enforce] && attribute_settings[:enforce].include?(:uri) && attribute_settings[:enforce].include?(:list)
+            # in case its a list of URI, convert all value to IRI
+            value = value.map { |v| RDF::IRI.new(v) }
           elsif attribute_settings && attribute_settings[:enforce] && attribute_settings[:enforce].include?(:uri)
             # TODO: Remove this awful hack when obj.class.model_settings[:range][attribute] contains RDF::IRI class
-            value = RDF::IRI.new(value)
+            unless value.nil?
+              # If pass an empty string for an URI : set it as nil.
+              value = RDF::IRI.new(value)
+            end
           end
-
           # Don't populate naming attributes if they exist
           if obj.class.model_settings[:name_with] != attribute || obj.send(attribute).nil?
             obj.send("#{attribute}=", value) if obj.respond_to?("#{attribute}=")
@@ -203,11 +211,11 @@ module Sinatra
           found_onts = onts.length > 0
           Ontology.where.models(onts).include(*Ontology.access_control_load_attrs).all
         else
-          if params["also_include_views"] == "true"
-            onts = Ontology.where.include(Ontology.goo_attrs_to_load()).to_a
+          onts = if params["also_include_views"] == "true"
+            Ontology.where.include(Ontology.goo_attrs_to_load()).to_a
           else
-            onts = Ontology.where.filter(Goo::Filter.new(:viewOf).unbound).include(Ontology.goo_attrs_to_load()).to_a
-          end
+            Ontology.where.filter(Goo::Filter.new(:viewOf).unbound).include(Ontology.goo_attrs_to_load()).to_a
+                 end
 
           found_onts = onts.length > 0
 
@@ -358,11 +366,11 @@ module Sinatra
         include_views = options[:also_include_views] || false
         includes = OntologySubmission.goo_attrs_to_load(includes_param)
         includes << :submissionStatus unless includes.include?(:submissionStatus)
-        if any
-          submissions_query = OntologySubmission.where
+        submissions_query = if any
+          OntologySubmission.where
         else
-          submissions_query = OntologySubmission.where(submissionStatus: [ code: status])
-        end
+          OntologySubmission.where(submissionStatus: [ code: status])
+                            end
 
         submissions_query = submissions_query.filter(Goo::Filter.new(ontology: [:viewOf]).unbound) unless include_views
         submissions = submissions_query.include(includes).to_a

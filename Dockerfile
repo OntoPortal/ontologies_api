@@ -1,4 +1,4 @@
-ARG RUBY_VERSION=3.0
+ARG RUBY_VERSION=3.1
 ARG DISTRO_NAME=bullseye
 
 FROM ruby:$RUBY_VERSION-$DISTRO_NAME
@@ -14,8 +14,6 @@ COPY Gemfile* /srv/ontoportal/ontologies_api/
 
 WORKDIR /srv/ontoportal/ontologies_api
 
-RUN gem update --system
-RUN gem install bundler
 ENV BUNDLE_PATH=/srv/ontoportal/bundle
 RUN bundle install
 
